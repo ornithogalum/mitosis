@@ -1,7 +1,12 @@
+pub mod lib;
+
 use std::{
     io::prelude::*,
-    net::{TcpListener, TcpStream}, thread, sync::{mpsc, Arc, Mutex}
+    net::{TcpListener, TcpStream}, thread, sync::{mpsc, Arc, Mutex}, collections::HashMap, string::FromUtf8Error
 };
+
+use lib::Builder;
+
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
@@ -44,8 +49,6 @@ impl Drop for ThreadPool {
         drop(self.sender.take());
 
         for worker in &mut self.workers {
-            println!("Shutting down worker {}", worker.id);
-
             if let Some(thread) = worker.thread.take() {
                 thread.join().unwrap();
             }
@@ -54,7 +57,7 @@ impl Drop for ThreadPool {
 }
 
 struct Worker {
-    id: usize,
+    _id: usize,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -65,19 +68,16 @@ impl Worker {
 
             match message {
                 Ok(job) => {
-                    println!("Worker {id} got a job; executing.");
-
                     job();
                 }
                 Err(_) => {
-                    println!("Worker {id} disconnected; shutting down.");
                     break;
                 }
             }
         });
 
         Worker {
-            id,
+            _id: id,
             thread: Some(thread),
         }
     }
@@ -109,6 +109,28 @@ impl SliceExt for [u8] {
     }
 }
 
+trait ToJson {
+    fn to_json(&self) -> Result<String, FromUtf8Error>;
+}
+
+impl ToJson for HashMap<&str, &str> {
+    fn to_json(&self) -> Result<String, FromUtf8Error> {
+        let mut json_builder = Builder::default();
+        let mut i = 0;
+        json_builder.append("{");
+        for (key, value) in self {
+            json_builder.append(format!(
+                "{:?}:{:?}{}",
+                key,
+                value,
+                if i == self.len() - 1 { "" } else { "," }));
+            i += 1;
+        }
+        json_builder.append("}");
+        json_builder.string()
+    }
+}
+
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
     let pool = ThreadPool::new(4);
@@ -129,9 +151,45 @@ fn handle_connection(mut stream: TcpStream) {
 
     stream.read(&mut buffer).unwrap();
 
-    let buffer = buffer.trim();
-
     let request = String::from_utf8_lossy(&buffer).into_owned();
 
-    println!("{:#?}", request);
+    let request: Vec<_> = request
+        .trim_matches(char::from(0))
+        .split("\r\n")
+        .collect();
+
+    let request_line: Vec<_> = request[0].split(" ").collect();
+
+    let mut headers = Vec::new();
+
+    for i in 1..request.len() {
+        if request[i].is_empty() { break; }
+        headers.push(request[i]);
+    }
+
+    let request_method = request_line[0];
+    let request_path = request_line[1];
+
+    let (response_code, response_body) = match request_method {
+        "HEAD" => (200, String::new()),
+        "GET" => {
+            let mut json_res: HashMap<&str, &str> = HashMap::new();
+            json_res.insert("hello", "world");
+            json_res.insert("test", "ing");
+            (200, json_res.to_json().unwrap())
+        },
+        "POST" => (200, format!("{{\"request_method\": \"{request_method}\"}}")),
+        _ => (405, format!("{{\"request_method\": \"{request_method}\"}}"))
+    };
+
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n{}",
+        response_code,
+        request_path,
+        response_body.len(),
+        response_body
+    );
+
+    stream.write_all(response.as_bytes()).unwrap();
+    stream.flush().unwrap();
 }
