@@ -153,18 +153,19 @@ fn handle_connection(mut stream: TcpStream) {
 
     let request = String::from_utf8_lossy(&buffer).into_owned();
 
-    let request: Vec<_> = request
+    let request: Vec<&str> = request
         .trim_matches(char::from(0))
         .split("\r\n")
         .collect();
 
-    let request_line: Vec<_> = request[0].split(" ").collect();
+    let request_line: Vec<&str> = request[0].split(" ").collect();
 
-    let mut headers = Vec::new();
+    let mut headers: HashMap<&str, &str> = HashMap::new();
 
     for i in 1..request.len() {
         if request[i].is_empty() { break; }
-        headers.push(request[i]);
+        let header: Vec<&str> = request[i].split(": ").collect();
+        headers.insert(header[0], header[1]);
     }
 
     let request_method = request_line[0];
@@ -179,7 +180,7 @@ fn handle_connection(mut stream: TcpStream) {
             (200, json_res.to_json().unwrap())
         },
         "POST" => (200, format!("{{\"request_method\": \"{request_method}\"}}")),
-        _ => (405, format!("{{\"request_method\": \"{request_method}\"}}"))
+        _ => (405, String::new())
     };
 
     let response = format!(
